@@ -217,6 +217,8 @@ def create_room():
         )
 
         return {"roomId": new_room.id}
+    except Exception as e:
+        return {"error": str(e)}
     finally:
         db.close()
 
