@@ -1,12 +1,39 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from dataclasses import dataclass, asdict
 from enum import Enum
 from typing import Dict, List, Optional
 import uuid
 import json
 import random
+
+from sqlalchemy import create_engine, Column, String, Integer
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
+
+# ------------------- MySQL + SQLAlchemy 설정 -------------------
+
+SQLALCHEMY_DATABASE_URL = "mysql+pymysql://admin:1234@localhost:3306/poker_db"
+
+engine = create_engine(SQLALCHEMY_DATABASE_URL, echo=True, pool_pre_ping=True)
+
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+Base = declarative_base()
+
+# ------------------- DB 모델 -------------------
+
+class GameRoom(Base):
+    __tablename__ = "game_rooms"
+
+    id = Column(String(6), primary_key=True, index=True)
+    player_count = Column(Integer, default=0)
+    phase = Column(String(20), default="waiting")
+
+# 테이블이 없으면 생성
+Base.metadata.create_all(bind=engine)
+
+# ------------------- FastAPI 앱 -------------------
 
 app = FastAPI()
 
@@ -75,18 +102,18 @@ player_to_room: Dict[str, str] = {}
 # ---------------------- 카드 정의 ----------------------
 
 SEOTTA_CARDS = [
-    Card(1, "bright", "송학", 20), Card(1, "ribbon", "송패", 5), Card(1, "junk", "송끌", 1),
-    Card(2, "animal", "매조", 10), Card(2, "ribbon", "매패", 5), Card(2, "junk", "매끌", 1),
-    Card(3, "bright", "벚광", 20), Card(3, "ribbon", "벚패", 5), Card(3, "junk", "벚끌", 1),
-    Card(4, "animal", "등새", 10), Card(4, "ribbon", "등패", 5), Card(4, "junk", "등끌", 1),
-    Card(5, "animal", "창다리", 10), Card(5, "ribbon", "창패", 5), Card(5, "junk", "창끌", 1),
-    Card(6, "animal", "모란나비", 10), Card(6, "ribbon", "모란패", 5), Card(6, "junk", "모란끌", 1),
-    Card(7, "animal", "싸리멧돼지", 10), Card(7, "ribbon", "싸리패", 5), Card(7, "junk", "싸리끌", 1),
-    Card(8, "bright", "억새달", 20), Card(8, "animal", "억새기러기", 10), Card(8, "junk", "억새끌", 1),
-    Card(9, "animal", "국화술잔", 10), Card(9, "ribbon", "국화패", 5), Card(9, "junk", "국화끌", 1),
-    Card(10, "animal", "단풍사슴", 10), Card(10, "ribbon", "단풍패", 5), Card(10, "junk", "단풍끌", 1),
-    Card(11, "bright", "오동광", 20), Card(11, "junk", "오동끌1", 1), Card(11, "junk", "오동끌2", 1),
-    Card(12, "bright", "비광", 20), Card(12, "animal", "비제비", 10), Card(12, "junk", "비끌", 1)
+    Card(1, "bright", "송학", 20), Card(1, "ribbon", "송파", 5), Card(1, "junk", "송클", 1),
+    Card(2, "animal", "매조", 10), Card(2, "ribbon", "매파", 5), Card(2, "junk", "매클", 1),
+    Card(3, "bright", "뱃광", 20), Card(3, "ribbon", "뱃파", 5), Card(3, "junk", "뱃클", 1),
+    Card(4, "animal", "등사", 10), Card(4, "ribbon", "등파", 5), Card(4, "junk", "등클", 1),
+    Card(5, "animal", "창다리", 10), Card(5, "ribbon", "창파", 5), Card(5, "junk", "창클", 1),
+    Card(6, "animal", "모란나비", 10), Card(6, "ribbon", "모란파", 5), Card(6, "junk", "모란클", 1),
+    Card(7, "animal", "사리머드", 10), Card(7, "ribbon", "사리파", 5), Card(7, "junk", "사리클", 1),
+    Card(8, "bright", "엉사달", 20), Card(8, "animal", "엉기러기", 10), Card(8, "junk", "엉클", 1),
+    Card(9, "animal", "국화술잔", 10), Card(9, "ribbon", "국화파", 5), Card(9, "junk", "국화클", 1),
+    Card(10, "animal", "단풍사승", 10), Card(10, "ribbon", "단풍파", 5), Card(10, "junk", "단풍클", 1),
+    Card(11, "bright", "오동광", 20), Card(11, "junk", "오동클1", 1), Card(11, "junk", "오동클2", 1),
+    Card(12, "bright", "비광", 20), Card(12, "animal", "비제비", 10), Card(12, "junk", "비클", 1)
 ]
 
 # ---------------------- GAME LOGIC ----------------------
@@ -168,153 +195,51 @@ async def root():
     return {"message": "섯다 게임 서버가 실행 중입니다!"}
 
 @app.post("/rooms")
-async def create_room(request: Request):
-    data = await request.json()
-    player_name = data.get("playerName")
+def create_room():
+    db = SessionLocal()
+    try:
+        room_id = uuid.uuid4().hex[:6].upper()
+        new_room = GameRoom(id=room_id, player_count=0, phase="waiting")
+        db.add(new_room)
+        db.commit()
+        db.refresh(new_room)
 
-    if not player_name:
-        return JSONResponse(status_code=400, content={"error": "플레이어 이름이 필요합니다."})
+        games[room_id] = GameState(
+            id=room_id,
+            players=[],
+            current_player=0,
+            phase=GamePhase.WAITING,
+            pot=0,
+            min_bet=100,
+            max_bet=1000,
+            round=0,
+            winner=None
+        )
 
-    room_id = uuid.uuid4().hex[:6].upper()
-    games[room_id] = GameState(
-        id=room_id,
-        players=[],
-        current_player=0,
-        phase=GamePhase.WAITING,
-        pot=0,
-        min_bet=100,
-        max_bet=10000,
-        round=1
-    )
-
-    return {"roomId": room_id, "message": f"{room_id} 방이 생성되었습니다."}
+        return {"roomId": new_room.id}
+    finally:
+        db.close()
 
 @app.get("/rooms")
-async def list_rooms():
-    return [
-        {
-            "roomId": game.id,
-            "playerCount": len(game.players),
-            "phase": game.phase.value
-        }
-        for game in games.values()
-        if len(game.players) < 2  # 최대 2명만 허용
-    ]
-
-
-# ---------------------- WEBSOCKET ----------------------
-
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    player_id = None
-    room_id = None
-
+def get_rooms():
+    db = SessionLocal()
     try:
-        while True:
-            data = await websocket.receive_text()
-            message = json.loads(data)
+        rooms = db.query(GameRoom).all()
+        return [{"id": r.id, "player_count": r.player_count, "phase": r.phase} for r in rooms]
+    finally:
+        db.close()
 
-            if message["type"] == "join_room":
-                room_id = message["roomId"]
-                player_id = message["playerId"]
-                player_name = message["playerName"]
-
-                if room_id not in games:
-                    return
-
-                game = games[room_id]
-
-                if len(game.players) >= 2:
-                    await websocket.send_text(json.dumps({"type": "error", "data": {"message": "방이 가득 찼습니다."}}))
-                    continue
-
-                player = Player(
-                    id=player_id, name=player_name, chips=5000,
-                    current_bet=0, cards=[], hand_value=0, hand_name="",
-                    status=PlayerStatus.WAITING, is_ready=False, websocket=websocket
-                )
-
-                game.players.append(player)
-                player_to_room[player_id] = room_id
-
-                await broadcast_game_state(game)
-
-            elif message["type"] == "ready":
-                game = games.get(room_id)
-                player = next((p for p in game.players if p.id == player_id), None)
-
-                if player:
-                    player.is_ready = True
-                    if len(game.players) == 2 and all(p.is_ready for p in game.players):
-                        start_new_round(game)
-                    await broadcast_game_state(game)
-
-            elif message["type"] == "bet":
-                game = games.get(room_id)
-                player = next((p for p in game.players if p.id == player_id), None)
-
-                if not player or game.phase != GamePhase.BETTING or game.players[game.current_player].id != player_id:
-                    continue
-
-                action = message["action"]
-
-                if action == "fold":
-                    player.status = PlayerStatus.FOLDED
-                    winner = next(p for p in game.players if p.id != player_id)
-                    winner.chips += game.pot
-                    game.winner = winner.name
-                    game.phase = GamePhase.FINISHED
-
-                elif action == "call":
-                    bet = game.min_bet
-                    if player.chips >= bet:
-                        player.chips -= bet
-                        player.current_bet += bet
-                        game.pot += bet
-                        game.current_player = (game.current_player + 1) % 2
-
-                        if all(p.status != PlayerStatus.PLAYING or p.current_bet > 0 for p in game.players):
-                            game.phase = GamePhase.REVEAL
-                            active = [p for p in game.players if p.status != PlayerStatus.FOLDED]
-                            if len(active) == 2:
-                                winner = max(active, key=lambda p: p.hand_value)
-                                winner.chips += game.pot
-                                game.winner = winner.name
-                                game.phase = GamePhase.FINISHED
-
-                elif action == "half":
-                    bet = game.pot // 2
-                    if player.chips >= bet:
-                        player.chips -= bet
-                        player.current_bet += bet
-                        game.pot += bet
-                        game.current_player = (game.current_player + 1) % 2
-
-                elif action == "all-in":
-                    bet = player.chips
-                    player.current_bet += bet
-                    game.pot += bet
-                    player.chips = 0
-                    player.status = PlayerStatus.ALL_IN
-                    game.current_player = (game.current_player + 1) % 2
-
-                await broadcast_game_state(game)
-
-            elif message["type"] == "new_game":
-                game = games.get(room_id)
-                if game:
-                    start_new_round(game)
-                    await broadcast_game_state(game)
-
-    except WebSocketDisconnect:
-        if player_id and room_id:
-            game = games.get(room_id)
-            if game:
-                game.players = [p for p in game.players if p.id != player_id]
-                if not game.players:
-                    del games[room_id]
-                else:
-                    await broadcast_game_state(game)
-
-            player_to_room.pop(player_id, None)
+@app.get("/rooms/{room_id}")
+def get_room(room_id: str):
+    db = SessionLocal()
+    try:
+        room = db.query(GameRoom).filter(GameRoom.id == room_id).first()
+        if not room:
+            raise HTTPException(status_code=404, detail="Room not found")
+        return {
+            "id": room.id,
+            "player_count": room.player_count,
+            "phase": room.phase
+        }
+    finally:
+        db.close()
