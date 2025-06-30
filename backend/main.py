@@ -189,6 +189,19 @@ async def create_room(request: Request):
 
     return {"roomId": room_id, "message": f"{room_id} 방이 생성되었습니다."}
 
+@app.get("/rooms")
+async def list_rooms():
+    return [
+        {
+            "roomId": game.id,
+            "playerCount": len(game.players),
+            "phase": game.phase.value
+        }
+        for game in games.values()
+        if len(game.players) < 2  # 최대 2명만 허용
+    ]
+
+
 # ---------------------- WEBSOCKET ----------------------
 
 @app.websocket("/ws")
