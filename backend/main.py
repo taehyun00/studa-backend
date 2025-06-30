@@ -6,10 +6,14 @@ from typing import Dict, List, Optional
 import uuid
 import json
 import random
+import uuid
+from pydantic import BaseModel
 
 from sqlalchemy import create_engine, Column, String, Integer
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+from models import GameRoom, SessionLocal  # 이건 기존대로
+from game_state import games, GameState, GamePhase
 
 # ------------------- MySQL + SQLAlchemy 설정 -------------------
 
@@ -29,6 +33,9 @@ class GameRoom(Base):
     id = Column(String(6), primary_key=True, index=True)
     player_count = Column(Integer, default=0)
     phase = Column(String(20), default="waiting")
+    
+class CreateRoomRequest(BaseModel):
+    player_name: str
 
 # 테이블이 없으면 생성
 Base.metadata.create_all(bind=engine)
@@ -192,18 +199,22 @@ async def root():
     return {"message": "섯다 게임 서버가 실행 중입니다!"}
 
 @app.post("/rooms")
-def create_room():
-    db = SessionLocal()
+def create_room(req: CreateRoomRequest):
+    db: Session = SessionLocal()
     try:
+        # 👇 2. 방 ID 생성
         room_id = uuid.uuid4().hex[:6].upper()
-        new_room = GameRoom(id=room_id, player_count=0, phase="waiting")
+
+        # 👇 3. DB에 새 방 생성
+        new_room = GameRoom(id=room_id, player_count=1, phase="waiting")
         db.add(new_room)
         db.commit()
         db.refresh(new_room)
 
+        # 👇 4. 게임 상태 초기화 (플레이어 포함)
         games[room_id] = GameState(
             id=room_id,
-            players=[],
+            players=[req.player_name],  # ← 여기 추가됨
             current_player=0,
             phase=GamePhase.WAITING,
             pot=0,
@@ -213,9 +224,12 @@ def create_room():
             winner=None
         )
 
-        return {"roomId": new_room.id}
+        # 👇 5. 프론트와 형식 맞추기 (room_id)
+        return {"room_id": new_room.id}
+    
     except Exception as e:
-        return {"error": str(e)}
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+    
     finally:
         db.close()
 
